@@ -11,7 +11,7 @@ import           Control.Concurrent.Chan.Unagi
 import           Control.Concurrent.MVar
   (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
 import           Control.Lens
-  ( ix, makeClassy, only, to, view, (^.), (^?))
+  (ix, makeClassy, only, to, view, (^.), (^?))
 import           Control.Monad
   (forever)
 import           Control.Monad.Reader
@@ -198,9 +198,11 @@ previewMessagesWithLinks nickName = loop
 -- Thread management
 -- ----------------------------------------------------------------------------
 
+forkEffect :: Effect IO () -> SafeT IO ThreadId
 forkEffect = liftIO . forkChild . runEffect
 
 children :: MVar [MVar ()]
+{-# NOINLINE children #-}
 children = unsafePerformIO (newMVar [])
 
 waitForChildren :: IO ()
