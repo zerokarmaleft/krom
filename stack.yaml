@@ -1,0 +1,10 @@
+flags: {}
+extra-package-dbs: []
+packages:
+- '.'
+extra-deps:
+- irc-0.6.1.0
+- taggy-0.2.0
+- taggy-lens-0.1.2
+- unagi-chan-0.4.0.0
+resolver: lts-3.11

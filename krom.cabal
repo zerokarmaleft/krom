@@ -1,0 +1,50 @@
+name:                krom
+version:             0.1.0.0
+synopsis:            Initial project template from stack
+description:         Please see README.md
+homepage:            http://github.com/zerokarmaleft/krom#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Edward Cho
+maintainer:          zerokarmaleft@gmail.com
+copyright:           Edward Cho
+category:            Web
+build-type:          Simple
+-- extra-source-files:
+cabal-version:       >=1.10
+
+executable krom
+  hs-source-dirs:      src
+  main-is:             Main.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , bytestring
+                     , irc
+                     , lens
+                     , mtl
+                     , network-simple
+                     , network-uri
+                     , pipes
+                     , pipes-bytestring
+                     , pipes-group
+                     , pipes-network
+                     , pipes-parse
+                     , pipes-safe
+                     , taggy-lens
+                     , text
+                     , unagi-chan
+                     , wreq
+  default-language:    Haskell2010
+
+test-suite krom-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , krom
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/zerokarmaleft/krom
