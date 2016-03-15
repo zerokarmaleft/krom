@@ -1,6 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 module Main where
 
@@ -11,7 +10,11 @@ import           Control.Concurrent.Chan.Unagi
 import           Control.Concurrent.MVar
   (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
 import           Control.Lens
-  (ix, makeClassy, only, to, view, (^.), (^?))
+  (Lens', ix, lens, makeClassy, only, over, preview, set, to, view, (^.), (^?), (.~))
+import           Control.Lens.Prism
+  (Prism', prism, _Just)
+import           Control.Lens.Tuple
+  (_1, _2, _3)
 import           Control.Monad
   (forever)
 import           Control.Monad.Reader
@@ -24,6 +27,8 @@ import qualified Data.ByteString.Lazy as LazyBS
 import           Data.Char
   (chr)
 import           Data.List.Lens
+import           Data.Monoid
+  ((<>))
 import           Data.Text.Encoding.Error
   (lenientDecode)
 import           Data.Text.Lazy
@@ -34,7 +39,7 @@ import           Data.Text.Lazy.Encoding
 import           Network.IRC
 import           Network.URI
 import           Network.Wreq
-  (get, responseBody)
+  (Response, get, responseBody)
 import           Pipes
 import qualified Pipes.ByteString as PipesBS
 import           Pipes.Network.TCP.Safe
@@ -64,12 +69,12 @@ makeClassy ''KromConfig
 
 defaultKromConfig :: KromConfig
 defaultKromConfig = KromConfig
-  { _kromNickName       = error "not configured"
-  , _kromServerName     = error "not configured"
-  , _kromRemoteHost     = error "not configured"
-  , _kromRemotePort     = error "not configured"
-  , _kromRemotePassword = error "not configured"
-  , _kromJoinChannels   = error "not configured"
+  { _kromNickName       = error "not configured" -- e.g. "krom"
+  , _kromServerName     = error "not configured" -- e.g. "localhost"
+  , _kromRemoteHost     = error "not configured" -- e.g. "localhost"
+  , _kromRemotePort     = error "not configured" -- e.g. "6667"
+  , _kromRemotePassword = error "not configured" -- e.g. "password"
+  , _kromJoinChannels   = error "not configured" -- e.g. ["#krom"]
   }
 
 registrationMessages :: KromConfig -> [Message]
@@ -81,6 +86,40 @@ registrationMessages config =
      , nick     configuredNickName
      , user     configuredNickName "0" "*" configuredNickName
      ] ++ joinChanMessages
+
+-- ----------------------------------------------------------------------------
+-- IRC lenses and prisms
+-- ----------------------------------------------------------------------------
+
+_MsgPrefix :: Lens' Message (Maybe Prefix)
+_MsgPrefix =
+  lens msg_prefix $ \msg p -> msg { msg_prefix=p }
+
+_MsgCommand :: Lens' Message Command
+_MsgCommand =
+  lens msg_command $ \msg c -> msg { msg_command=c }
+
+_MsgParams :: Lens' Message [Parameter]
+_MsgParams =
+  lens msg_params $ \msg ps -> msg { msg_params=ps }
+
+_PrefixServer :: Prism' Prefix ByteString
+_PrefixServer =
+  prism Server $
+        \p ->
+          case p of
+           Server serverName -> Right serverName
+           _                 -> Left p
+
+_PrefixNickName :: Prism' Prefix (ByteString, Maybe UserName, Maybe ServerName)
+_PrefixNickName =
+  prism (\(nickName, userName, serverName) -> NickName nickName userName serverName) $
+        \p ->
+          case p of
+            NickName nickName userName serverName ->
+              Right (nickName, userName, serverName)
+            _ ->
+              Left p
 
 -- ----------------------------------------------------------------------------
 -- IRC extensions
@@ -159,40 +198,38 @@ echoMessages nickName = forever $
   do message <- await
      yield $ message { msg_prefix = Just nickName }
 
-getLinkPreview :: MonadIO m => Parameter -> m Parameter
-getLinkPreview param =
-  do let mURI = parseURI . CharBS.unpack $ param
-     case mURI of
-       Just uri ->
-         do response <- liftIO . get $ (uriToString unEscapeString uri) ""
-            let title = response ^. responseBody
-                                  . to (decodeUtf8With lenientDecode)
-                                  . html
-                                  . allNamed (only "title")
-                                  . contents
-            return . LazyBS.toStrict . encodeUtf8 . Text.strip . Text.fromStrict $ title
-       Nothing ->
-         return "Invalid URI"
-
 previewMessagesWithLinks :: MonadIO m => Prefix -> Pipe Message Message m ()
 previewMessagesWithLinks nickName = loop
   where
     loop =
-      do message <- await
-         case msg_params message ^? ix 1 of
-           Just messageBody ->
-             do title <- lift . getLinkPreview $ messageBody
-                let linker = msg_prefix message
-                    formattedTitle =
-                      case msg_prefix message of
-                        Just (NickName linker _ _) -> BS.concat [bold title, " linked by ", linker]
-                        Nothing                    -> bold title
-                yield $ message { msg_prefix = Just nickName
-                                , msg_params = ["#beatdown", formattedTitle]
-                                }
+      do msg <- await
+         let parsedURI = uriToString unEscapeString <$> (parseURI . CharBS.unpack =<< msg ^? _MsgParams . ix 1) <*> pure ""
+         case parsedURI of
+           Just uri ->
+             do response <- liftIO . get $ uri
+                yield $ previewMessage msg response
                 loop
            Nothing ->
              loop
+
+    getTitle :: Response LazyBS.ByteString -> Parameter
+    getTitle response =
+      let title = response ^. responseBody
+                            . to (decodeUtf8With lenientDecode)
+                            . html
+                            . allNamed (only "title")
+                            . contents
+      in (LazyBS.toStrict . encodeUtf8 . Text.strip . Text.fromStrict) title
+
+    previewMessage :: Message -> Response LazyBS.ByteString -> Message
+    previewMessage msg response =
+      let title          = getTitle response
+          linker         = msg ^. _MsgPrefix . _Just . _PrefixNickName . _1
+          channel        = msg ^. _MsgParams . ix 0
+          previewMsgBody = title <> " linked by " <> linker
+      in msg { msg_prefix = Just nickName
+             , msg_params = [channel, previewMsgBody]
+             }
 
 -- ----------------------------------------------------------------------------
 -- Thread management
@@ -270,4 +307,4 @@ startPipes =
           liftIO waitForChildren
 
 main :: IO ()
-main = runSafeT . (flip runReaderT) defaultKromConfig $ startPipes
+main = runSafeT . flip runReaderT defaultKromConfig $ startPipes
