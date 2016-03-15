@@ -129,7 +129,11 @@ password :: ByteString -> Message
 password p = Message Nothing "PASS" [p]
 
 bold :: ByteString -> ByteString
-bold content = BS.concat [BS.singleton 0x02, content, BS.singleton 0x0f]
+bold content = BS.singleton 0x02 <> content <> BS.singleton 0x0f
+
+nickNamePrefix :: String -> String -> String -> Prefix
+nickNamePrefix nickName userName serverName =
+  NickName (CharBS.pack nickName) (Just $ CharBS.pack userName) (Just $ CharBS.pack serverName)
 
 -- ----------------------------------------------------------------------------
 -- IRC message predicates
@@ -142,14 +146,6 @@ isPingMessage _                              = False
 isPrivateMessage :: Message -> Bool
 isPrivateMessage Message { msg_command="PRIVMSG" } = True
 isPrivateMessage _                                 = False
-
-hasMessageBodyWithLink :: Message -> Bool
-hasMessageBodyWithLink Message { msg_params=(_:msgBody:_) } = isURI . CharBS.unpack $ msgBody
-hasMessageBodyWithLink _ = False
-
-nickNamePrefix :: String -> String -> String -> Prefix
-nickNamePrefix nickName userName serverName =
-  NickName (CharBS.pack nickName) (Just $ CharBS.pack userName) (Just $ CharBS.pack serverName)
 
 -- ----------------------------------------------------------------------------
 -- IRC message pipes
@@ -183,15 +179,15 @@ formatMessages = forever $
   do message <- await
      yield $ CharBS.pack (show message ++ "\n")
 
-pongPingMessages :: Monad m => Pipe Message Message m ()
-pongPingMessages = forever $
-  do pingMessage <- await
-     yield $ pingMessage { msg_command="PONG" }
-
 encodeMessages :: Monad m => Pipe Message ByteString m ()
 encodeMessages = forever $
   do message <- await
      yield $ BS.append (encode message) "\r\n"
+
+pongPingMessages :: Monad m => Pipe Message Message m ()
+pongPingMessages = forever $
+  do pingMessage <- await
+     yield $ pingMessage { msg_command="PONG" }
 
 echoMessages :: Monad m => Prefix -> Pipe Message Message m ()
 echoMessages nickName = forever $
@@ -272,6 +268,8 @@ startPipes =
           toEchoer                  <- liftIO $ dupChan fromIRCServer
           toLinkPreviewer           <- liftIO $ dupChan fromIRCServer
 
+          let nickName = nickNamePrefix (config ^. kromNickName) (config ^. kromNickName) (config ^. kromServerName)
+
           -- establish session
           runEffect $   each (registrationMessages config)
                     >-> encodeMessages
@@ -294,13 +292,12 @@ startPipes =
           -- echoer pipeline
           forkEffect $   subscribeMessages toEchoer
                      >-> Pipes.filter isPrivateMessage
-                     >-> echoMessages (nickNamePrefix (config ^. kromNickName) (config ^. kromNickName) (config ^. kromServerName))
+                     >-> echoMessages nickName
                      >-> encodeMessages
                      >-> toSocket clientSocket
           -- link previewer pipeline
           forkEffect $   subscribeMessages toLinkPreviewer
-                     >-> Pipes.filter hasMessageBodyWithLink
-                     >-> previewMessagesWithLinks (nickNamePrefix (config ^. kromNickName) (config ^. kromNickName) (config ^. kromServerName))
+                     >-> previewMessagesWithLinks nickName
                      >-> encodeMessages
                      >-> toSocket clientSocket
 
